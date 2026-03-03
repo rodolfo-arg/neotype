@@ -1,27 +1,27 @@
-# neotype.nvim
+# NeoType
 
-In-buffer Neovim typing trainer that works on the current buffer without modifying underlying file contents.
+In-buffer Neovim typing trainer that runs directly on your current buffer without modifying underlying file contents.
+
+## Demo
+![NeoType demo](assets/neotype-demo.gif)
+
+First 5 seconds run at normal speed; the rest is accelerated.
 
 ## Features
-- Non-destructive typing test overlay on your active buffer
-- Pending text highlighting and error highlighting
-- Live statusline metadata support (WPM, progress, accuracy)
-- Start from your current cursor position
-- Keeps normal Vim motions available during the session
+- Non-destructive typing overlay on the active buffer
+- Pending/correct/error feedback while typing
+- Start at current cursor position
+- Vim motions remain available during session
+- Optional lualine metadata (progress, WPM, accuracy, timer)
 
 ## Requirements
 - Neovim 0.9+
 
-## Installation (lazy.nvim)
+## Installation (`lazy.nvim`)
 ```lua
 {
   "rodolfo-arg/neotype",
-  opts = {
-    -- optional overrides
-    auto_start_insert = true,
-    auto_skip_indent_on_enter = true,
-    allow_backspace = true,
-  },
+  opts = {},
 }
 ```
 
@@ -31,8 +31,24 @@ In-buffer Neovim typing trainer that works on the current buffer without modifyi
 - `:NeoTypeCancel`
 - `:checkhealth neotype`
 
-## Statusline
-A lualine component is exposed by `require("neotype.lualine").component()`.
+## Configuration
+```lua
+require("neotype").setup({
+  auto_start_insert = true,
+  auto_skip_indent_on_enter = true,
+  tab_consumes_leading_indent = true,
+  allow_backspace = true,
+})
+```
+
+## Lualine Integration
+```lua
+{
+  function()
+    return require("neotype.lualine").component()
+  end,
+}
+```
 
 ## Local Development Smoke Test
 ```bash
