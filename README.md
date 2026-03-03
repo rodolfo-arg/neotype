@@ -5,8 +5,6 @@ In-buffer Neovim typing trainer that runs directly on your current buffer withou
 ## Demo
 ![NeoType demo](assets/neotype-demo.gif)
 
-First 5 seconds run at normal speed; the rest is accelerated.
-
 ## Features
 - Non-destructive typing overlay on the active buffer
 - Pending/correct/error feedback while typing
@@ -50,7 +48,7 @@ require("neotype").setup({
 }
 ```
 
-## Local Development Smoke Test
+## Development Smoke Test
 ```bash
 bash scripts/test-neotype-headless.sh
 ```
