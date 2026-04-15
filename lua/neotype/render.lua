@@ -13,6 +13,30 @@ local win_sessions = {}
 local configured_hl_ns = {}
 local redraw_scheduled = false
 
+--- Convert a 0-based byte column to a 0-based character column.
+local function byte_to_char_col(line, byte_col)
+  if byte_col <= 0 or line == "" then
+    return 0
+  end
+  local idx = vim.fn.charidx(line, byte_col)
+  if idx < 0 then
+    return vim.fn.strchars(line)
+  end
+  return idx
+end
+
+--- Convert a 0-based character column to a 0-based byte column.
+local function char_to_byte_col(line, char_col)
+  if char_col <= 0 or line == "" then
+    return 0
+  end
+  local byte = vim.fn.byteidx(line, char_col)
+  if byte < 0 then
+    return #line
+  end
+  return byte
+end
+
 local function request_redraw()
   if redraw_scheduled then
     return
@@ -155,7 +179,7 @@ function M.build_index(lines)
   local idx = 0
   for i, line in ipairs(lines) do
     line_starts[i] = idx
-    idx = idx + #line
+    idx = idx + vim.fn.strchars(line)
     if i < #lines then
       idx = idx + 1
     end
@@ -163,6 +187,7 @@ function M.build_index(lines)
   return line_starts, idx
 end
 
+--- Convert a character-based flat index to (0-based row, character column).
 ---@param session table
 ---@param index integer
 ---@return integer, integer
@@ -180,7 +205,7 @@ function M.index_to_pos(session, index)
 
   if index >= session.total_chars then
     local row = #lines - 1
-    return row, #lines[#lines]
+    return row, vim.fn.strchars(lines[#lines])
   end
 
   local lo = 1
@@ -197,16 +222,18 @@ function M.index_to_pos(session, index)
   local line_nr = math.max(hi, 1)
   local line = lines[line_nr]
   local col = index - starts[line_nr]
-  if col > #line then
-    col = #line
+  local char_len = vim.fn.strchars(line)
+  if col > char_len then
+    col = char_len
   end
 
   return line_nr - 1, col
 end
 
+--- Convert (0-based row, byte column from cursor) to character-based flat index.
 ---@param session table
 ---@param row integer
----@param col integer
+---@param col integer  byte column from nvim_win_get_cursor
 ---@return integer
 function M.pos_to_index(session, row, col)
   local lines = session.target_lines
@@ -219,8 +246,10 @@ function M.pos_to_index(session, row, col)
 
   local clamped_row = math.min(math.max(row, 0), line_count - 1)
   local line_nr = clamped_row + 1
-  local line_len = #lines[line_nr]
-  local clamped_col = math.min(math.max(col, 0), line_len)
+  local line = lines[line_nr]
+  local char_col = byte_to_char_col(line, math.max(col, 0))
+  local char_len = vim.fn.strchars(line)
+  local clamped_col = math.min(char_col, char_len)
 
   return starts[line_nr] + clamped_col
 end
@@ -235,8 +264,9 @@ function M.char_at(session, index)
 
   local row, col = M.index_to_pos(session, index)
   local line = session.target_lines[row + 1]
-  if col < #line then
-    return line:sub(col + 1, col + 1)
+  local char_len = vim.fn.strchars(line)
+  if col < char_len then
+    return vim.fn.strcharpart(line, col, 1)
   end
 
   if row + 1 < #session.target_lines then
@@ -255,8 +285,10 @@ function M.goto_index(session, index, winid)
     return
   end
 
-  local row, col = M.index_to_pos(session, index)
-  pcall(vim.api.nvim_win_set_cursor, target_winid, { row + 1, col })
+  local row, char_col = M.index_to_pos(session, index)
+  local line = session.target_lines[row + 1] or ""
+  local byte_col = char_to_byte_col(line, char_col)
+  pcall(vim.api.nvim_win_set_cursor, target_winid, { row + 1, byte_col })
 end
 
 local function add_pending_mark(session, row, id)
@@ -309,34 +341,41 @@ local function update_pending_line(session, row)
 
   local typed = session.typed or {}
   local line = lines[line_nr]
-  local line_len = #line
+  local char_count = vim.fn.strchars(line)
   local line_start = session.line_starts[line_nr] or 0
   local error_index = session.error_index
 
-  local span_start = nil
-  for col = 0, line_len - 1 do
-    local idx = line_start + col
+  local span_start_byte = nil
+  local byte_pos = 0
+
+  for ci = 0, char_count - 1 do
+    local ch = vim.fn.strcharpart(line, ci, 1)
+    local ch_bytes = #ch
+    local idx = line_start + ci
+
     if typed[idx] or idx == error_index then
-      if span_start then
-        local id = vim.api.nvim_buf_set_extmark(session.bufnr, ns_pending, row, span_start, {
+      if span_start_byte ~= nil then
+        local id = vim.api.nvim_buf_set_extmark(session.bufnr, ns_pending, row, span_start_byte, {
           end_row = row,
-          end_col = col,
+          end_col = byte_pos,
           hl_group = "NeoTypePending",
           priority = opts.priorities.pending,
           strict = false,
         })
         add_pending_mark(session, row, id)
-        span_start = nil
+        span_start_byte = nil
       end
-    elseif not span_start then
-      span_start = col
+    elseif span_start_byte == nil then
+      span_start_byte = byte_pos
     end
+
+    byte_pos = byte_pos + ch_bytes
   end
 
-  if span_start then
-    local id = vim.api.nvim_buf_set_extmark(session.bufnr, ns_pending, row, span_start, {
+  if span_start_byte ~= nil then
+    local id = vim.api.nvim_buf_set_extmark(session.bufnr, ns_pending, row, span_start_byte, {
       end_row = row,
-      end_col = line_len,
+      end_col = #line,
       hl_group = "NeoTypePending",
       priority = opts.priorities.pending,
       strict = false,
@@ -345,9 +384,9 @@ local function update_pending_line(session, row)
   end
 
   if opts.pending_newline_marker and line_nr < #lines then
-    local newline_idx = line_start + line_len
+    local newline_idx = line_start + char_count
     if not typed[newline_idx] and newline_idx ~= error_index then
-      local id = vim.api.nvim_buf_set_extmark(session.bufnr, ns_pending, row, line_len, {
+      local id = vim.api.nvim_buf_set_extmark(session.bufnr, ns_pending, row, #line, {
         virt_text = { { "↵", "NeoTypePending" } },
         virt_text_pos = "eol",
         priority = opts.priorities.pending,
@@ -433,12 +472,14 @@ local function update_error(session)
     return
   end
 
-  local row, col = M.index_to_pos(session, session.error_index)
+  local row, char_col = M.index_to_pos(session, session.error_index)
+  local line = session.target_lines[row + 1] or ""
+  local byte_col = char_to_byte_col(line, char_col)
   local expected = M.char_at(session, session.error_index)
   local priority = math.min(math.max(opts.priorities.error, 30000), 65535)
 
   if expected == "\n" then
-    session.error_mark_id = vim.api.nvim_buf_set_extmark(bufnr, ns_error, row, col, {
+    session.error_mark_id = vim.api.nvim_buf_set_extmark(bufnr, ns_error, row, byte_col, {
       virt_text = { { "↵", "NeoTypeError" } },
       virt_text_pos = "eol",
       hl_mode = "replace",
@@ -452,12 +493,13 @@ local function update_error(session)
     return
   end
 
-  pcall(vim.api.nvim_buf_add_highlight, bufnr, ns_error, "NeoTypeError", row, col, col + 1)
+  local byte_end = byte_col + #expected
+  pcall(vim.api.nvim_buf_add_highlight, bufnr, ns_error, "NeoTypeError", row, byte_col, byte_end)
 
   local overlay_text = error_overlay_text(session, expected)
-  session.error_mark_id = vim.api.nvim_buf_set_extmark(bufnr, ns_error, row, col, {
+  session.error_mark_id = vim.api.nvim_buf_set_extmark(bufnr, ns_error, row, byte_col, {
     end_row = row,
-    end_col = col + 1,
+    end_col = byte_end,
     hl_group = "NeoTypeError",
     virt_text = { { overlay_text, "NeoTypeError" } },
     virt_text_pos = "overlay",
@@ -500,24 +542,38 @@ local function draw_overlay_pending_line(session, row)
 
   local typed = session.typed or {}
   local line = lines[line_nr]
+  local char_count = vim.fn.strchars(line)
   local line_start = session.line_starts[line_nr] or 0
   local error_index = session.error_index
-  local span_start = nil
+  local span_start_byte = nil
+  local span_text = ""
+  local byte_pos = 0
 
-  for col = 0, #line - 1 do
-    local idx = line_start + col
+  for ci = 0, char_count - 1 do
+    local ch = vim.fn.strcharpart(line, ci, 1)
+    local ch_bytes = #ch
+    local idx = line_start + ci
+
     if typed[idx] or idx == error_index then
-      if span_start then
-        draw_overlay_span(session, row, span_start, line:sub(span_start + 1, col))
-        span_start = nil
+      if span_start_byte ~= nil then
+        draw_overlay_span(session, row, span_start_byte, span_text)
+        span_start_byte = nil
+        span_text = ""
       end
-    elseif not span_start then
-      span_start = col
+    else
+      if span_start_byte == nil then
+        span_start_byte = byte_pos
+        span_text = ch
+      else
+        span_text = span_text .. ch
+      end
     end
+
+    byte_pos = byte_pos + ch_bytes
   end
 
-  if span_start then
-    draw_overlay_span(session, row, span_start, line:sub(span_start + 1))
+  if span_start_byte ~= nil then
+    draw_overlay_span(session, row, span_start_byte, span_text)
   end
 end
 
@@ -527,7 +583,7 @@ local function draw_overlay_error_line(session, row)
     return
   end
 
-  local error_row, error_col = M.index_to_pos(session, error_index)
+  local error_row, error_char_col = M.index_to_pos(session, error_index)
   if error_row ~= row then
     return
   end
@@ -537,9 +593,12 @@ local function draw_overlay_error_line(session, row)
     return
   end
 
+  local line = session.target_lines[row + 1] or ""
+  local byte_col = char_to_byte_col(line, error_char_col)
   local priority = config.options.priorities.error + 1000
+
   if expected == "\n" then
-    vim.api.nvim_buf_set_extmark(session.bufnr, ns_overlay, row, error_col, {
+    vim.api.nvim_buf_set_extmark(session.bufnr, ns_overlay, row, byte_col, {
       virt_text = { { "↵", "NeoTypeError" } },
       virt_text_pos = "eol",
       hl_mode = "replace",
@@ -549,9 +608,10 @@ local function draw_overlay_error_line(session, row)
     return
   end
 
-  vim.api.nvim_buf_set_extmark(session.bufnr, ns_overlay, row, error_col, {
+  local byte_end = byte_col + #expected
+  vim.api.nvim_buf_set_extmark(session.bufnr, ns_overlay, row, byte_col, {
     end_row = row,
-    end_col = error_col + 1,
+    end_col = byte_end,
     hl_group = "NeoTypeError",
     virt_text = { { error_overlay_text(session, expected), "NeoTypeError" } },
     virt_text_pos = "overlay",
