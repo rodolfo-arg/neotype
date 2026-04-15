@@ -196,12 +196,12 @@ local function finish(session)
   restore_buffer_assists(session)
   restore_window_listchars(session)
   refresh_ui(session, { full_pending = true })
+  state.clear()
 
   vim.schedule(function()
-    if state.get() ~= session then
-      return
+    if not state.is_active() then
+      pcall(vim.cmd, "stopinsert")
     end
-    pcall(vim.cmd, "stopinsert")
     local m = metrics.compute(session)
     if m then
       notify(string.format("NeoType complete: %d WPM, %d%% accuracy, %d errors", m.wpm, m.accuracy_pct, m.errors))
